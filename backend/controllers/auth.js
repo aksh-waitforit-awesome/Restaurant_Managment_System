@@ -1,0 +1,214 @@
+const User = require("../models/User")
+const asyncWrapper = require("../utils/asyncWrapper")
+const BadRequestError = require("../errors/badRequestError")
+const UnauthorizedError = require("../errors/unauthorizedError")
+const NotFoundError = require("../errors/notFoundError")
+const jwt = require("jsonwebtoken")
+const getArcjet = require("../utils/arcjet")
+const cleanupQueue = require("../queue")
+// const aj = require("../utils/arcjet.js")
+// ---------------- REGISTER (CUSTOMER ONLY)
+module.exports.register = asyncWrapper(async (req, res) => {
+  console.log(req.body)
+  const { username, email, password } = req.body
+  if (!username || !email || !password) {
+    throw new BadRequestError("Provide all required fields")
+  }
+
+  const existing = await User.findOne({ email })
+  if (existing) throw new BadRequestError("Email already in use")
+
+  const user = await User.create({
+    username,
+    email,
+    password,
+    role: "customer",
+  })
+
+  res.status(201).json({
+    message: "account created",
+    success: true,
+  })
+})
+
+// ---------------- LOGIN (ALL USERS)
+module.exports.login = asyncWrapper(async (req, res) => {
+  const { email, password } = req.body
+  if (!email || !password)
+    throw new BadRequestError("Provide email and password")
+
+  const user = await User.findOne({ email }).select("+password")
+  if (!user) throw new NotFoundError(`No account found with ${email}`)
+
+  const isMatch = await user.comparePassword(password)
+  if (!isMatch) throw new UnauthorizedError("Invalid credentials")
+
+  const accessToken = user.generateAccessToken()
+  const refreshToken = user.generateRefreshToken()
+  console.log("user:", user)
+  console.log("accessToken:", accessToken)
+  console.log("refreshToken:", refreshToken)
+  res.cookie("refreshToken", refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  })
+
+  res.status(200).json({
+    accessToken,
+    user: { username: user.username, role: user.role },
+  })
+})
+
+// ---------------- CREATE ADMIN (MANUAL)
+module.exports.createAdmin = asyncWrapper(async (req, res) => {
+  const existingAdmin = await User.findOne({ role: "admin" })
+  if (existingAdmin) throw new BadRequestError("Admin already exists")
+  const adminData = {
+    username: process.env.ADMIN_USERNAME,
+    email: process.env.ADMIN_EMAIL,
+    password: process.env.ADMIN_PASSWORD,
+    role: "admin",
+  }
+  const admin = await User.create(adminData)
+  res.status(201).json({ message: "admin created" })
+})
+
+module.exports.createDemoAdmin = asyncWrapper(async (req, res) => {
+  const existingDemoAdmin = await User.findOne({ role: "demo_admin" })
+  if (existingDemoAdmin) throw new BadRequestError("Demo admin already exists")
+  const demoAdminData = {
+    username: process.env.DEMO_ADMIN_USERNAME,
+    email: process.env.DEMO_ADMIN_EMAIL,
+    password: process.env.DEMO_ADMIN_PASSWORD,
+    role: "demo_admin",
+  }
+  const demoAdmin = await User.create(demoAdminData)
+  res.status(201).json({ message: "demo admin created" })
+})
+// ---------------- ADD MANAGER OR STAFF (ADMIN/MANAGER)
+module.exports.addUser = asyncWrapper(async (req, res) => {
+  const { username, email, password, role } = req.body
+
+  // 1. Arcjet Protection
+  // We call the getter and then run the protection logic immediately
+  const aj = await getArcjet()
+  const decision = await aj.protect(req, { requested: 1 })
+
+  if (decision.isDenied()) {
+    if (decision.reason.isRateLimit()) {
+      throw new BadRequestError("Rate limit exceeded. Try again in 24 hours.")
+    }
+    throw new UnauthorizedError("Request blocked by security shield.")
+  }
+
+  // 2. Initial Validation
+  if (!username || !email || !password || !role) {
+    throw new BadRequestError(
+      "All fields (username, email, password, role) are required.",
+    )
+  }
+
+  const requesterRole = req.user.role
+  const isDemoAdmin = requesterRole === "demo_admin"
+
+  // 3. Security: Prevent role escalation
+  if (["admin", "demo_admin"].includes(role)) {
+    throw new BadRequestError(
+      "Cannot create administrative roles via this endpoint.",
+    )
+  }
+
+  // 4. Authorization check
+  if (requesterRole !== "admin" && !isDemoAdmin) {
+    throw new UnauthorizedError("You do not have permission to add staff.")
+  }
+
+  // 5. Check if User already exists
+  const existingUser = await User.findOne({ $or: [{ username }, { email }] })
+  if (existingUser) {
+    throw new BadRequestError("Username or email already exists.")
+  }
+
+  // 6. Prepare User Data
+  const userData = {
+    username,
+    email,
+    password,
+    role,
+    isDemo: isDemoAdmin,
+  }
+
+  // 7. Create User
+  const user = await User.create(userData)
+  if (isDemoAdmin) {
+    // Demo accounts automatically expire in 3 minutes
+    await cleanupQueue.add(
+      "delete-demo-staff-cascade",
+      { UserId: user._id },
+      { delay: 24 * 60 * 60 * 1000 },
+    )
+  }
+
+  // 8. Final Response
+  res.status(201).json({
+    success: true,
+    message: isDemoAdmin
+      ? "Demo staff created (expires in 3 mins)"
+      : "Staff created successfully",
+    user: {
+      id: user._id,
+      username: user.username,
+      role: user.role,
+      expireAt: user.expireAt,
+    },
+  })
+})
+
+module.exports.refresh = asyncWrapper(async (req, res) => {
+  const refreshToken = req.cookies.refreshToken
+  console.log("refresh:", refreshToken)
+  if (!refreshToken) {
+    throw new UnauthorizedError("refresh token is missing")
+  }
+  const payload = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET)
+  const user = await User.findById(payload.user_id)
+  if (!user) throw new UnauthorizedError("User no longer exist")
+  const accessToken = user.generateAccessToken()
+  res
+    .status(200)
+    .json({ accessToken, user: { username: user.username, role: user.role } })
+})
+module.exports.logout = asyncWrapper(async (req, res) => {
+  res.clearCookie("refreshToken", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+  })
+  res.status(200).json({
+    success: true,
+    message: "Logged out successfully",
+  })
+})
+module.exports.getStaff = asyncWrapper(async (req, res) => {
+  // ✅ Correct Syntax: { field: { $nin: [values] } }
+  const { search = "", page = 1, limit = 10, role = "" } = req.query
+  // Build Query Filter
+  const query = {
+    username: { $regex: search, $options: "i" },
+    role: role ? role : { $nin: ["customer"] }, // If role filter is provided, use it; otherwise, ignore
+  }
+
+  const staff = await User.find(query)
+    .limit(limit)
+    .skip((page - 1) * limit)
+  const total = await User.countDocuments(query)
+  res.status(200).json({
+    success: true,
+    data: staff,
+    totalPages: Math.ceil(total / limit),
+    currentPage: Number(page),
+    totalMembers: total,
+  })
+})

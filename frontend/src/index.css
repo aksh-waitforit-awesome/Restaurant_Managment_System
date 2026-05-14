@@ -1,0 +1,33 @@
+/* index.css */
+@import "tailwindcss";
+
+@theme {
+  --color-primary: var(--primary);
+  --color-surface: var(--surface);
+  --color-text: var(--text);
+  --color-accent: var(--accent);
+}
+
+/* Default Light Theme - "The Fresh Citrus" */
+:root {
+  --primary: #ea580c; /* Tailwind orange-600 */
+  --accent: #fff7ed; /* Tailwind orange-50 */
+  --surface: #ffffff;
+  --text: #1c1917; /* Stone-900 (Warm Black) */
+}
+
+/* Dark Theme - "The Burnt Sunset" */
+.dark {
+  --primary: #fb923c; /* Tailwind orange-400 */
+  --accent: #292524; /* Stone-800 */
+  --surface: #0c0a09; /* Stone-950 */
+  --text: #fafaf9; /* Stone-50 */
+}
+
+/* Luxury Theme - "The Golden Spice" */
+.theme-luxury {
+  --primary: #d4af37; /* Classic Gold */
+  --accent: #1e1b18; /* Deep Chocolate/Black */
+  --surface: #0a0a0a; /* Jet Black */
+  --text: #fdfcf0; /* Creamy White */
+}

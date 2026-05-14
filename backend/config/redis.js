@@ -1,0 +1,26 @@
+const { Redis } = require("ioredis")
+
+const redisUrl =
+  process.env.NODE_ENV === "production"
+    ? process.env.REDIS_URL
+    : "rediss://default:gQAAAAAAAc3OAAIgcDExNTUzYzNiYzQxYTQ0OTk0ODMxZDI1NzJkYjM1YTM3Zg@tough-chamois-118222.upstash.io:6379"
+console.log(redisUrl)
+// Production environments (like Heroku/Render) often require
+// TLS (rediss://) and rejecting unauthorized certificates.
+// Configuration for Redis
+const options = {
+  // CRITICAL: BullMQ requires this to be null
+  maxRetriesPerRequest: null,
+  // Add TLS if the URL is secure
+  ...(redisUrl.startsWith("rediss://")
+    ? { tls: { rejectUnauthorized: false } }
+    : {}),
+}
+const client = new Redis(redisUrl, options)
+
+// Error handling is crucial to prevent the process from crashing
+// if the Redis server goes down.
+client.on("error", (err) => console.error("Redis Client Error", err))
+
+
+module.exports = client
