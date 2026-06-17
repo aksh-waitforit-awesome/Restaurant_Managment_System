@@ -24,31 +24,37 @@ const { handleStripeWebhook } = require("./controllers/order")
 const { attachWebServer } = require("./ws/server")
 const app = express()
 const server = http.createServer(app)
+const allowedOrigins = [
+  process.env.NODE_ENV === "production" ? process.env.CLIENT_URL : "http://localhost:5173",
+  process.env.NODE_ENV === "production" ? process.env.ADMIN_URL : "http://localhost:5174",
+].filter(Boolean); // Filters out undefined if an env var is missing
 
-console.log("admin url", process.env.ADMIN_URL)
-app.set("trust proxy", 1)
+app.set("trust proxy", 1);
+
 app.use(
   cors({
-    origin: [
-      process.env.NODE_ENV === "production"
-        ? process.env.CLIENT_URL
-        : "http://localhost:5173",
-      process.env.NODE_ENV === "production"
-        ? process.env.ADMIN_URL
-        : "http://localhost:5174",
-    ], // Specify your frontend URL
-    credentials: true, // Allow cookies to be sent
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  }),
-)
+    // Removed allowedHeaders so Axios's default 'Accept' header isn't blocked
+  })
+);
+
+// Your Stripe webhook remains exactly as you have it
 app.post(
   "/api/webhook",
   express.raw({ type: "application/json" }),
   handleStripeWebhook,
-)
-app.use(express.json())
-app.use(cookieParser())
+);
+
+app.use(express.json());
+app.use(cookieParser());
 
 app.use("/api/v1/auth", authRoute)
 app.use("/api/v1/category", categoryRoute)
